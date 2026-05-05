@@ -1,8 +1,9 @@
-import { useState } from "react";
+import { useState, useEffect, useRef } from "react";
 import { Button, Card, Form, Modal, Table } from "@agentscope-ai/design";
 import dayjs from "dayjs";
 import type { CronJobSpecOutput } from "../../../api/types";
 import { useTranslation } from "react-i18next";
+import api from "../../../api";
 import {
   createColumns,
   JobDrawer,
@@ -10,6 +11,7 @@ import {
   DEFAULT_FORM_VALUES,
 } from "./components";
 import { parseCron, serializeCron } from "./components/parseCron";
+import { PageHeader } from "@/components/PageHeader";
 import styles from "./index.module.less";
 
 type CronJob = CronJobSpecOutput;
@@ -27,12 +29,29 @@ function CronJobsPage() {
   } = useCronJobs();
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [editingJob, setEditingJob] = useState<CronJob | null>(null);
+  const [saving, setSaving] = useState(false);
   const [form] = Form.useForm<CronJob>();
+  const userTimezoneRef = useRef("UTC");
+
+  useEffect(() => {
+    api
+      .getUserTimezone()
+      .then((res) => {
+        if (res.timezone) userTimezoneRef.current = res.timezone;
+      })
+      .catch((err) => console.error("Failed to fetch user timezone:", err));
+  }, []);
 
   const handleCreate = () => {
     setEditingJob(null);
     form.resetFields();
-    form.setFieldsValue(DEFAULT_FORM_VALUES);
+    form.setFieldsValue({
+      ...DEFAULT_FORM_VALUES,
+      schedule: {
+        ...DEFAULT_FORM_VALUES.schedule,
+        timezone: userTimezoneRef.current,
+      },
+    });
     setDrawerOpen(true);
   };
 
@@ -140,26 +159,40 @@ function CronJobsPage() {
       },
     };
 
-    // Parse request input JSON
-    if (values.request?.input && typeof values.request.input === "string") {
-      try {
-        processedValues = {
-          ...processedValues,
-          request: {
-            ...values.request,
-            input: JSON.parse(values.request.input as any),
-          },
-        };
-      } catch (error) {
-        console.error("❌ Failed to parse request.input JSON:", error);
+    if (processedValues.task_type === "text") {
+      // Remove request object entirely for text tasks
+      delete processedValues.request;
+    } else if (processedValues.task_type === "agent") {
+      //Ensure request object exists
+      if (!processedValues.request) {
+        processedValues.request = {};
+      }
+
+      // Parse request input JSON
+      if (
+        processedValues.request?.input &&
+        typeof processedValues.request.input === "string"
+      ) {
+        try {
+          processedValues.request.input = JSON.parse(
+            processedValues.request.input,
+          );
+        } catch (error) {
+          console.error("❌ Failed to parse request.input JSON:", error);
+        }
       }
     }
 
     let success = false;
-    if (editingJob) {
-      success = await updateJob(editingJob.id, processedValues);
-    } else {
-      success = await createJob(processedValues);
+    setSaving(true);
+    try {
+      if (editingJob) {
+        success = await updateJob(editingJob.id, processedValues);
+      } else {
+        success = await createJob(processedValues);
+      }
+    } finally {
+      setSaving(false);
     }
     if (success) {
       setDrawerOpen(false);
@@ -176,15 +209,14 @@ function CronJobsPage() {
 
   return (
     <div className={styles.cronJobsPage}>
-      <div className={styles.header}>
-        <div className={styles.headerInfo}>
-          <h1 className={styles.title}>{t("cronJobs.title")}</h1>
-          <p className={styles.description}>{t("cronJobs.description")}</p>
-        </div>
-        <Button type="primary" onClick={handleCreate}>
-          + {t("cronJobs.createJob")}
-        </Button>
-      </div>
+      <PageHeader
+        items={[{ title: t("nav.control") }, { title: t("cronJobs.title") }]}
+        extra={
+          <Button type="primary" onClick={handleCreate}>
+            + {t("cronJobs.createJob")}
+          </Button>
+        }
+      />
 
       <Card className={styles.tableCard} bodyStyle={{ padding: 0 }}>
         <Table
@@ -196,7 +228,6 @@ function CronJobsPage() {
           pagination={{
             pageSize: 10,
             showSizeChanger: false,
-            showTotal: (total) => t("cronJobs.totalItems", { count: total }),
           }}
         />
       </Card>
@@ -205,6 +236,7 @@ function CronJobsPage() {
         open={drawerOpen}
         editingJob={editingJob}
         form={form}
+        saving={saving}
         onClose={handleDrawerClose}
         onSubmit={handleSubmit}
       />
